@@ -1,0 +1,26 @@
+Mini-Project Results
+
+The mini-project combined all learned techniques into a single workflow. A complex binary image containing multiple objects, a hole, a thin line, and an isolated point was created. The following tasks were successfully completed:
+Isolated Point Detection: The hit-or-miss transform successfully identified the single isolated point in the custom image.
+Boundary Extraction: The boundaries of all objects in the custom image were accurately extracted, demonstrating the effect of erosion and subtraction.
+Hole Filling: The hole within one of the objects was filled using the border-based hole filling algorithm, confirming its ability to correctly identify and fill internal background regions.
+Connected Component Labeling: All distinct connected components in the image were successfully labeled and visualized, providing a clear count and spatial separation of objects.
+Component Area Reporting: The areas (number of pixels) for each connected component were calculated and reported, and the largest component was successfully isolated and displayed.
+
+
+
+Application to External Image (charles_leclerc.jpg) Results
+
+All morphological methods were also applied to the charles_leclerc.jpg image. After reading the image in grayscale and binarizing it using Otsu's method, the following results were observed:
+
+Hit-or-Miss: Applied with a specific kernel, it highlighted patterns matching the kernel, demonstrating its utility for texture or feature detection.
+Boundary Extraction: The boundaries of the detected foreground regions in the binarized image were extracted, effectively outlining the shapes.
+Hole Filling: Internal 'holes' or dark regions within the foreground objects (e.g., within textual elements or complex shapes in the binarized image) were filled, creating more solid objects.
+Connected Components: All connected regions in the binarized image were identified and assigned unique labels, visualized with a distinct color map, providing insight into the number and distribution of separate foreground elements.
+
+
+Conclusion
+
+This project successfully demonstrated the implementation and application of several fundamental mathematical morphology operations. Students gained practical experience in using scipy.ndimage and cv2 for image manipulation, pattern detection, and object analysis in binary images.
+
+
