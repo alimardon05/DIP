@@ -1,0 +1,69 @@
+# =============================================================================
+# config.py — Central Configuration for Medical Image Denoising Project
+# =============================================================================
+# Student : Mardonali Fayzullayev
+# ID      : 230423
+# Course  : Digital Image Processing
+# Project : Noise Removal in Medical Images
+# =============================================================================
+
+import os
+from pathlib import Path
+
+# ── Project Root ──────────────────────────────────────────────────────────────
+ROOT = Path(__file__).parent
+
+# ── Data Paths ────────────────────────────────────────────────────────────────
+DATA_DIR        = ROOT / "data"
+CLEAN_DIR       = DATA_DIR / "clean"
+NOISY_DIR       = DATA_DIR / "noisy"
+RAW_DIR         = DATA_DIR / "raw"          # put your Kaggle zip here
+
+# ── Results Paths ─────────────────────────────────────────────────────────────
+RESULTS_DIR     = ROOT / "results"
+CLASSICAL_DIR   = RESULTS_DIR / "classical"
+NLM_DIR         = RESULTS_DIR / "nlm"
+DNCNN_DIR       = RESULTS_DIR / "dncnn"
+METRICS_DIR     = RESULTS_DIR / "metrics"
+PLOTS_DIR       = ROOT / "plots"
+MODELS_DIR      = ROOT / "models"
+
+# ── Image Settings ────────────────────────────────────────────────────────────
+IMG_SIZE        = (256, 256)   # All images resized to this
+CHANNELS        = 1            # Grayscale
+
+# ── Noise Settings ────────────────────────────────────────────────────────────
+GAUSSIAN_SIGMAS = [10, 20, 30]                  # Gaussian noise levels
+SP_AMOUNTS      = [0.02, 0.05]                  # Salt & pepper densities
+
+# ── Dataset Split ─────────────────────────────────────────────────────────────
+TRAIN_RATIO     = 0.70
+VAL_RATIO       = 0.15
+TEST_RATIO      = 0.15
+RANDOM_SEED     = 42
+MAX_IMAGES      = 200          # Cap for speed; set None for all
+
+# ── DnCNN Hyperparameters ─────────────────────────────────────────────────────
+DNCNN_DEPTH     = 17           # Number of Conv layers
+DNCNN_CHANNELS  = 64           # Feature channels
+DNCNN_EPOCHS    = 50
+DNCNN_BATCH     = 16
+DNCNN_LR        = 1e-3
+DNCNN_TRAIN_SIGMA = 25         # Sigma used during DnCNN training
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+METRICS         = ["psnr", "ssim", "time"]
+
+# ── Auto-create all directories ───────────────────────────────────────────────
+ALL_DIRS = [
+    CLEAN_DIR, NOISY_DIR, RAW_DIR,
+    CLASSICAL_DIR, NLM_DIR, DNCNN_DIR, METRICS_DIR,
+    PLOTS_DIR, MODELS_DIR,
+    DATA_DIR / "noisy" / "gaussian_10",
+    DATA_DIR / "noisy" / "gaussian_20",
+    DATA_DIR / "noisy" / "gaussian_30",
+    DATA_DIR / "noisy" / "sp_002",
+    DATA_DIR / "noisy" / "sp_005",
+]
+for d in ALL_DIRS:
+    os.makedirs(d, exist_ok=True)
