@@ -1,0 +1,340 @@
+# =============================================================================
+# src/dataset.py — Dataset Loading, Preprocessing & Noise Injection
+# =============================================================================
+# Student : Mardonali Fayzullayev  |  ID: 230423
+# =============================================================================
+
+import os
+import random
+import json
+import zipfile
+import numpy as np
+import cv2
+from pathlib import Path
+from tqdm import tqdm
+
+import sys
+sys.path.append(str(Path(__file__).parent.parent))
+from config import *
+
+
+# =============================================================================
+# 1.  DATASET DOWNLOAD HELPER
+# =============================================================================
+
+def setup_kaggle(kaggle_json_path: str = None):
+    """
+    Configure Kaggle API credentials.
+
+    Parameters
+    ----------
+    kaggle_json_path : str, optional
+        Path to kaggle.json file. If None, looks in ~/.kaggle/kaggle.json.
+
+    Usage
+    -----
+        setup_kaggle("C:/Users/you/Downloads/kaggle.json")
+    """
+    kaggle_dir = Path.home() / ".kaggle"
+    kaggle_dir.mkdir(exist_ok=True)
+    dest = kaggle_dir / "kaggle.json"
+
+    if kaggle_json_path:
+        import shutil
+        shutil.copy(kaggle_json_path, dest)
+        dest.chmod(0o600)
+        print(f"✅  Kaggle credentials saved to {dest}")
+    elif dest.exists():
+        print(f"✅  Kaggle credentials already at {dest}")
+    else:
+        raise FileNotFoundError(
+            "kaggle.json not found!\n"
+            "1. Go to https://www.kaggle.com\n"
+            "2. Profile → Settings → API → Create New Token\n"
+            "3. Call setup_kaggle('path/to/kaggle.json')"
+        )
+
+
+def download_dataset(dataset_slug: str = "navoneel/brain-mri-images-for-brain-tumor-detection",
+                     dest_dir: Path = RAW_DIR):
+    """
+    Download a Kaggle dataset and unzip it.
+
+    Parameters
+    ----------
+    dataset_slug : str
+        Kaggle dataset identifier (owner/dataset-name).
+    dest_dir : Path
+        Where to save and unzip the dataset.
+    """
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    import kaggle
+    print(f"📥  Downloading: {dataset_slug}")
+    kaggle.api.authenticate()
+    kaggle.api.dataset_download_files(dataset_slug, path=str(dest_dir), unzip=True)
+    print(f"✅  Dataset saved to {dest_dir}")
+
+
+def manual_unzip(zip_path: str, dest_dir: Path = RAW_DIR):
+    """
+    Manually unzip a downloaded Kaggle zip file.
+
+    Parameters
+    ----------
+    zip_path : str
+        Path to the .zip file you downloaded manually.
+    dest_dir : Path
+        Extraction target folder.
+
+    Usage
+    -----
+        manual_unzip("C:/Downloads/archive.zip")
+    """
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    print(f"📦  Unzipping {zip_path} → {dest_dir} …")
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(dest_dir)
+    print(f"✅  Done. Files saved to {dest_dir}")
+
+
+# =============================================================================
+# 2.  IMAGE LOADING & PREPROCESSING
+# =============================================================================
+
+def find_images(root_dir: Path, extensions=(".jpg", ".jpeg", ".png", ".bmp")):
+    """Recursively find all image files under root_dir."""
+    paths = []
+    for ext in extensions:
+        paths.extend(Path(root_dir).rglob(f"*{ext}"))
+        paths.extend(Path(root_dir).rglob(f"*{ext.upper()}"))
+    return sorted(set(paths))
+
+
+def load_image(path: Path, size=IMG_SIZE) -> np.ndarray | None:
+    """
+    Load one image → grayscale float64 in [0, 1].
+
+    Returns None if the file cannot be read.
+    """
+    img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return None
+    img = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
+    return img.astype(np.float64) / 255.0
+
+
+def load_dataset(raw_dir: Path = RAW_DIR,
+                 max_images: int = MAX_IMAGES,
+                 seed: int = RANDOM_SEED):
+    """
+    Load all images from raw_dir into memory.
+
+    Returns
+    -------
+    images : np.ndarray  shape (N, H, W)  float64 [0, 1]
+    names  : list[str]
+    """
+    paths = find_images(raw_dir)
+
+    # Fallback: use scikit-image built-in brain MRI if no files found
+    if len(paths) == 0:
+        print("⚠️   No images found — using scikit-image demo images.")
+        return _load_demo_images()
+
+    if max_images and len(paths) > max_images:
+        random.seed(seed)
+        random.shuffle(paths)
+        paths = paths[:max_images]
+
+    images, names = [], []
+    for p in tqdm(paths, desc="Loading images"):
+        img = load_image(p)
+        if img is not None:
+            images.append(img)
+            names.append(p.stem)
+
+    images = np.array(images)
+    print(f"✅  Loaded {len(images)} images  shape={images.shape}")
+    return images, names
+
+
+def _load_demo_images():
+    """Use scikit-image's built-in brain MRI as fallback."""
+    from skimage import data as skdata
+    brain = skdata.brain()                     # (10, 256, 256) uint8
+    images = brain.astype(np.float64) / 255.0
+    names  = [f"brain_{i:02d}" for i in range(len(images))]
+    print(f"✅  Demo images loaded: {images.shape}")
+    return images, names
+
+
+def split_dataset(images: np.ndarray,
+                  train_r=TRAIN_RATIO,
+                  val_r=VAL_RATIO,
+                  seed=RANDOM_SEED):
+    """
+    Split images into train / val / test sets.
+
+    Returns
+    -------
+    (train, val, test) — each is np.ndarray
+    """
+    n = len(images)
+    idx = list(range(n))
+    random.seed(seed)
+    random.shuffle(idx)
+
+    n_train = int(n * train_r)
+    n_val   = int(n * val_r)
+
+    return (
+        images[idx[:n_train]],
+        images[idx[n_train:n_train + n_val]],
+        images[idx[n_train + n_val:]]
+    )
+
+
+# =============================================================================
+# 3.  NOISE INJECTION
+# =============================================================================
+
+def add_gaussian_noise(image: np.ndarray, sigma: float) -> np.ndarray:
+    """
+    Add Gaussian (additive white) noise.
+
+    Parameters
+    ----------
+    image : np.ndarray  float64 [0, 1]
+    sigma : float       noise standard deviation in [0, 255] scale
+
+    Returns
+    -------
+    noisy image clipped to [0, 1]
+    """
+    sigma_norm = sigma / 255.0
+    noise = np.random.normal(0, sigma_norm, image.shape)
+    return np.clip(image + noise, 0.0, 1.0)
+
+
+def add_salt_pepper_noise(image: np.ndarray, amount: float) -> np.ndarray:
+    """
+    Add salt-and-pepper (impulse) noise.
+
+    Parameters
+    ----------
+    image  : np.ndarray  float64 [0, 1]
+    amount : float       fraction of corrupted pixels (e.g. 0.02 = 2 %)
+    """
+    noisy = image.copy()
+    n_total = image.size
+    n_half  = int(n_total * amount / 2)
+
+    # Salt  (white)
+    salt_r = np.random.randint(0, image.shape[0], n_half)
+    salt_c = np.random.randint(0, image.shape[1], n_half)
+    noisy[salt_r, salt_c] = 1.0
+
+    # Pepper (black)
+    pep_r = np.random.randint(0, image.shape[0], n_half)
+    pep_c = np.random.randint(0, image.shape[1], n_half)
+    noisy[pep_r, pep_c] = 0.0
+
+    return noisy
+
+
+def build_noisy_dataset(clean: np.ndarray,
+                        gaussian_sigmas=GAUSSIAN_SIGMAS,
+                        sp_amounts=SP_AMOUNTS,
+                        seed=RANDOM_SEED):
+    """
+    Create all noisy variants of a clean image array.
+
+    Returns
+    -------
+    dict  {key: np.ndarray}
+    Example keys: 'gaussian_10', 'gaussian_20', 'sp_002', 'sp_005'
+    """
+    np.random.seed(seed)
+    noisy = {}
+
+    for s in gaussian_sigmas:
+        key = f"gaussian_{s}"
+        noisy[key] = np.array([add_gaussian_noise(img, s) for img in clean])
+        print(f"   ✅  {key}: {noisy[key].shape}")
+
+    for a in sp_amounts:
+        key = f"sp_{str(a).replace('.', '')}"
+        noisy[key] = np.array([add_salt_pepper_noise(img, a) for img in clean])
+        print(f"   ✅  {key}: {noisy[key].shape}")
+
+    return noisy
+
+
+# =============================================================================
+# 4.  SAVE / LOAD PREPROCESSED DATA
+# =============================================================================
+
+def save_data(train, val, test, noisy_dict):
+    """Save all arrays to data/ directory."""
+    np.save(CLEAN_DIR / "train.npy", train)
+    np.save(CLEAN_DIR / "val.npy",   val)
+    np.save(CLEAN_DIR / "test.npy",  test)
+
+    for key, arr in noisy_dict.items():
+        out = NOISY_DIR / key
+        out.mkdir(parents=True, exist_ok=True)
+        np.save(out / "test.npy", arr)
+
+    print("✅  All data saved.")
+
+
+def load_data():
+    """Load preprocessed data from data/ directory."""
+    train = np.load(CLEAN_DIR / "train.npy")
+    val   = np.load(CLEAN_DIR / "val.npy")
+    test  = np.load(CLEAN_DIR / "test.npy")
+
+    noisy = {}
+    for folder in sorted((NOISY_DIR).iterdir()):
+        npy = folder / "test.npy"
+        if npy.exists():
+            noisy[folder.name] = np.load(npy)
+
+    print(f"✅  Loaded — train:{train.shape}  val:{val.shape}  test:{test.shape}")
+    return train, val, test, noisy
+
+
+# =============================================================================
+# 5.  MAIN RUNNER
+# =============================================================================
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("  STEP 1 — Dataset Setup & Preprocessing")
+    print("=" * 60)
+
+    # ── Option A: download automatically via Kaggle API
+    # setup_kaggle("path/to/your/kaggle.json")
+    # download_dataset()
+
+    # ── Option B: you already downloaded archive.zip manually
+    # manual_unzip("path/to/archive.zip")
+
+    # ── Load images
+    images, names = load_dataset()
+
+    # ── Split
+    train, val, test = split_dataset(images)
+    print(f"\nSplit → train:{len(train)}  val:{len(val)}  test:{len(test)}")
+
+    # ── Add noise to test set
+    print("\nGenerating noisy variants …")
+    noisy = build_noisy_dataset(test)
+
+    # ── Save
+    save_data(train, val, test, noisy)
+
+    print("\n✅  Step 1 complete. Run src/filters.py next.")
