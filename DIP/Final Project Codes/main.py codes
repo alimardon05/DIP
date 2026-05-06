@@ -1,0 +1,287 @@
+# =============================================================================
+# main.py — Full Pipeline: Noise Removal in Medical Images
+# =============================================================================
+# Student : Mardonali Fayzullayev  |  ID: 230423
+# Course  : Digital Image Processing
+# =============================================================================
+#
+#  Run order:
+#    python main.py --step 1      ← dataset setup & preprocessing
+#    python main.py --step 2      ← classical filters
+#    python main.py --step 3      ← DnCNN training
+#    python main.py --step 4      ← evaluation & plots
+#    python main.py --all         ← run everything
+#
+# =============================================================================
+
+import argparse
+import sys
+import numpy as np
+from pathlib import Path
+
+from config import *
+from src.dataset  import (load_dataset, split_dataset, build_noisy_dataset,
+                           save_data, load_data,
+                           setup_kaggle, download_dataset, manual_unzip)
+from src.filters  import run_all_classical_filters
+from src.dncnn    import train_dncnn, denoise_batch_dncnn, load_model
+from src.metrics  import evaluate_batch, build_full_table, save_table, print_results_table
+from src.visualize import (plot_noise_samples, plot_filter_comparison,
+                            plot_psnr_bar, plot_ssim_bar,
+                            plot_training_curve, plot_edge_maps,
+                            plot_summary_dashboard)
+
+
+# =============================================================================
+# STEP 1 — DATASET
+# =============================================================================
+
+def step1_dataset(kaggle_json: str = None, zip_path: str = None):
+    """
+    Setup dataset, preprocess, add noise, save.
+
+    Parameters
+    ----------
+    kaggle_json : path to kaggle.json  (optional — for auto download)
+    zip_path    : path to archive.zip  (optional — for manual download)
+    """
+    print("\n" + "="*60)
+    print("  STEP 1 — Dataset Setup & Preprocessing")
+    print("="*60)
+
+    # ── Download (if needed)
+    if kaggle_json:
+        setup_kaggle(kaggle_json)
+        download_dataset()
+    elif zip_path:
+        manual_unzip(zip_path)
+    else:
+        print("ℹ️   No download args provided — looking for images in data/raw/")
+        print("    (or scikit-image demo will be used as fallback)\n")
+
+    # ── Load images
+    images, names = load_dataset()
+
+    # ── Split
+    train, val, test = split_dataset(images)
+    print(f"\nSplit: train={len(train)}  val={len(val)}  test={len(test)}")
+
+    # ── Add noise to test set
+    print("\nGenerating noisy variants …")
+    noisy = build_noisy_dataset(test)
+
+    # ── Save
+    save_data(train, val, test, noisy)
+
+    # ── Visualize noise samples
+    plot_noise_samples(test, save=True)
+
+    print("\n✅  Step 1 complete!\n")
+    return train, val, test, noisy
+
+
+def step2_classical(test, noisy):
+    """Apply all 4 classical filters and evaluate."""
+    print("\n" + "="*60)
+    print("  STEP 2 — Classical Filters")
+    print("="*60)
+
+    results = run_all_classical_filters(test, noisy)
+
+    # Show sample comparison for gaussian_20
+    if "gaussian_20" in noisy and "gaussian_20" in results:
+        denoised_imgs = {
+            k: v["images"] for k, v in results["gaussian_20"].items()
+        }
+        plot_filter_comparison(
+            test, noisy["gaussian_20"], denoised_imgs,
+            noise_label="gaussian_20", save=True
+        )
+        plot_edge_maps(
+            test, noisy["gaussian_20"], denoised_imgs, save=True
+        )
+
+    # Save classical results to disk
+    import pickle
+    import os
+    os.makedirs('results', exist_ok=True)
+    with open('results/classical_results.pkl', 'wb') as f:
+        pickle.dump({k: {m: v['images'] for m, v in r.items()} 
+                     for k, r in results.items()}, f)
+    print("✅  Classical results saved to disk!")
+
+    print("\n✅  Step 2 complete!\n")
+    return results
+
+# =============================================================================
+# STEP 3 — DnCNN
+# =============================================================================
+
+def step3_dncnn(train, val, test, noisy):
+    """Train DnCNN and run inference."""
+    print("\n" + "="*60)
+    print("  STEP 3 — DnCNN Deep Learning")
+    print("="*60)
+
+    model_path = MODELS_DIR / "dncnn_best.pth"
+
+    # Train (or load if already trained)
+    if model_path.exists():
+        print(f"⚡  Found existing model at {model_path}")
+        ans = input("   Retrain? (y/N): ").strip().lower()
+        if ans == "y":
+            model, history = train_dncnn(train, val)
+            plot_training_curve(history, save=True)
+        else:
+            model = load_model(model_path)
+            history = None
+    else:
+        model, history = train_dncnn(train, val)
+        plot_training_curve(history, save=True)
+
+    # Inference on all noise types
+    dncnn_results = {}
+    for noise_key, noisy_arr in noisy.items():
+        denoised, avg_t = denoise_batch_dncnn(noisy_arr, model)
+        dncnn_results[noise_key] = {
+            "images":   denoised,
+            "avg_time": avg_t,
+        }
+        m = evaluate_batch(test, denoised)
+        print(f"  DnCNN | {noise_key:<20}  "
+              f"PSNR={m['psnr']:.2f} dB  SSIM={m['ssim']:.4f}  "
+              f"t={avg_t*1000:.1f}ms")
+
+    print("\n✅  Step 3 complete!\n")
+
+    # Save DnCNN results to disk
+    import pickle
+    save_dncnn = {k: {'images': v['images'], 'avg_time': v['avg_time']} 
+                  for k, v in dncnn_results.items()}
+    with open('results/dncnn_results.pkl', 'wb') as f:
+        pickle.dump(save_dncnn, f)
+
+    return dncnn_results
+
+
+# =============================================================================
+# STEP 4 — EVALUATION & PLOTS
+# =============================================================================
+
+def step4_evaluation(test, noisy, classical_results, dncnn_results):
+    """Build full comparison table and generate all plots."""
+    print("\n" + "="*60)
+    print("  STEP 4 — Evaluation & Visualization")
+    print("="*60)
+
+    # ── Load saved results from disk
+    import pickle
+
+    try:
+        with open('results/classical_results.pkl', 'rb') as f:
+            saved = pickle.load(f)
+        for nk, methods in saved.items():
+            if nk not in classical_results:
+                classical_results[nk] = {}
+            for m, imgs in methods.items():
+                classical_results[nk][m] = {'images': imgs, 'avg_time': 0.001}
+        print("✅  Classical results loaded from disk!")
+    except Exception as e:
+        print(f"⚠️  No saved classical results found: {e}")
+
+    try:
+        with open('results/dncnn_results.pkl', 'rb') as f:
+            saved_d = pickle.load(f)
+        for nk, data in saved_d.items():
+            dncnn_results[nk] = data
+        print("✅  DnCNN results loaded from disk!")
+    except Exception as e:
+        print(f"⚠️  No saved DnCNN results found: {e}")
+
+    # ── Merge classical + DnCNN results
+    all_results = {}
+    for noise_key in noisy:
+        all_results[noise_key] = {}
+        if noise_key in classical_results:
+            all_results[noise_key].update(classical_results[noise_key])
+        if noise_key in dncnn_results:
+            all_results[noise_key]["DnCNN"] = dncnn_results[noise_key]
+
+    # ── Build full table
+    df = build_full_table(test, noisy, all_results)
+    save_table(df, "full_results.csv")
+
+    # ── Print table
+    print("\n📊  FULL RESULTS TABLE:")
+    print("="*70)
+    print(df.to_string(index=False))
+    print("="*70)
+
+    # ── Plots for each noise type
+    for noise_key in noisy:
+        plot_psnr_bar(df, noise_key=noise_key, save=True)
+        plot_ssim_bar(df, noise_key=noise_key, save=True)
+
+    # ── Summary dashboard
+    plot_summary_dashboard(df, save=True)
+
+    # ── Best method per noise type
+    print("\n🏆  Best Method per Noise Type:")
+    print("-" * 45)
+    for noise_key in noisy:
+        sub = df[df["Noise Type"] == noise_key]
+        best = sub.loc[sub["PSNR (dB)"].idxmax()]
+        print(f"  {noise_key:<22} → {best['Method']:<12} "
+              f"PSNR={best['PSNR (dB)']:.2f} dB  SSIM={best['SSIM']:.4f}")
+
+    print("\n✅  Step 4 complete!\n")
+    print(f"📁  All plots saved to: {PLOTS_DIR}")
+    print(f"📊  Results CSV saved to: {METRICS_DIR / 'full_results.csv'}")
+    return df
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Noise Removal in Medical Images — Full Pipeline"
+    )
+    parser.add_argument("--step",   type=int, choices=[1, 2, 3, 4],
+                        help="Run a specific step (1-4)")
+    parser.add_argument("--all",    action="store_true",
+                        help="Run all steps")
+    parser.add_argument("--kaggle", type=str, default=None,
+                        help="Path to kaggle.json for auto-download")
+    parser.add_argument("--zip",    type=str, default=None,
+                        help="Path to manually downloaded archive.zip")
+    args = parser.parse_args()
+
+    print("\n" + "="*60)
+    print("  Noise Removal in Medical Images")
+    print("  Mardonali Fayzullayev | ID: 230423")
+    print("="*60)
+
+    if args.all or args.step == 1:
+        train, val, test, noisy = step1_dataset(args.kaggle, args.zip)
+    else:
+        train, val, test, noisy = load_data()
+
+    classical_results, dncnn_results = {}, {}
+
+    if args.all or args.step == 2:
+        classical_results = step2_classical(test, noisy)
+
+    if args.all or args.step == 3:
+        dncnn_results = step3_dncnn(train, val, test, noisy)
+
+    if args.all or args.step == 4:
+        step4_evaluation(test, noisy, classical_results, dncnn_results)
+
+    if not (args.all or args.step):
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
